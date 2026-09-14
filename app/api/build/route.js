@@ -3,6 +3,7 @@ import { loadCatalog } from "../../../lib/loadCatalog";
 import { askEngine, validate } from "../../../lib/engine";
 import { parlayOdds, SPORTSBOOK } from "../../../lib/opticodds";
 import { toAm, describeLeg } from "../../../lib/catalog";
+import { normalizeConstraints } from "../../../lib/engine";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -15,8 +16,15 @@ export async function POST(req) {
 
   try {
     const { game, rows, cfg } = await loadCatalog(sport, fixture_id);
-    const parsed = await askEngine({ game, rows, cfg, turns, locked, rejected });
-    const { legs, naive } = validate(parsed, rows, locked, rejected);
+    let parsed = await askEngine({ game, rows, cfg, turns, locked, rejected });
+    let v = validate(parsed, rows, locked, rejected, parsed.constraints);
+    // One more pass if the user's stated constraints weren't met.
+    if (v.unmet.length) {
+      const retry = await askEngine({ game, rows, cfg, turns, locked, rejected, feedback: v.unmet.join("; ") });
+      const v2 = validate(retry, rows, locked, rejected, retry.constraints || parsed.constraints);
+      if (v2.unmet.length < v.unmet.length || (v2.unmet.length === v.unmet.length && v2.naive > v.naive)) { parsed = { ...parsed, ...retry, constraints: retry.constraints || parsed.constraints }; v = v2; }
+    }
+    const { legs, naive } = v;
     const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
 
     // Correlated price from the OpticOdds SGP pricer. Best effort: if the
@@ -35,6 +43,9 @@ export async function POST(req) {
     }
 
     return NextResponse.json({
+      title: parsed.title || "",
+      constraints: normalizeConstraints(parsed.constraints),
+      unmet: v.unmet,
       summary: parsed.summary || "",
       note: parsed.note || "",
       legs: legs.map((l) => ({ ...l, label: describeLeg(byId[l.id]), price: byId[l.id].price, market: byId[l.id].market })),

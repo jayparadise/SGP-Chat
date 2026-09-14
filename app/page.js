@@ -1,203 +1,235 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 
-const SPORT_TABS = [
-  ["nfl", "NFL"], ["ncaaf", "NCAAF"], ["nba", "NBA"], ["mlb", "MLB"], ["nhl", "NHL"], ["epl", "Premier League"],
+const SPORTS = [
+  ["nfl", "NFL", "🏈"], ["ncaaf", "NCAAF", "🏈"], ["nba", "NBA", "🏀"], ["mlb", "MLB", "⚾"], ["nhl", "NHL", "🏒"], ["epl", "Premier League", "⚽"],
 ];
 
 const EXAMPLES = {
-  nfl: ["Home team wins big and the QB has a huge game", "Low-scoring slugfest decided on the ground", "Shootout — both QBs go over 275"],
+  nfl: ["Home team wins big and the QB has a huge game", "Low-scoring slugfest decided on the ground", "Shootout, 5+ legs, at least 15.0"],
   ncaaf: ["Favorite covers easily and runs it 40 times", "Upset — the dog's QB has the game of his life"],
   nba: ["Star goes for 40 and they blow the doors off", "Grind-it-out game, under the total, home team squeaks by"],
-  mlb: ["Ace dominates, 8+ Ks, and the offense chips in just enough", "Slugfest — bullpens get torched, over the total"],
-  nhl: ["Goalie stands on his head, 1-0 or 2-1 win", "Track meet — over the total, top line feasts"],
+  mlb: ["Ace dominates, 8+ Ks, offense chips in just enough", "Slugfest — bullpens get torched, over the total"],
+  nhl: ["Goalie stands on his head, 2-1 win", "Track meet — over the total, top line feasts"],
   epl: ["Home side dominates possession and wins to nil", "Scrappy 1-1, lots of cards, few shots on target"],
 };
 
-const fmtAm = (a) => (a == null ? "—" : a > 0 ? `+${Math.round(a)}` : `${Math.round(a)}`);
 const toDec = (a) => (a > 0 ? 1 + a / 100 : 1 + 100 / -a);
-const toAm = (d) => (d >= 2 ? Math.round((d - 1) * 100) : -Math.round(100 / (d - 1)));
+const dec = (a) => (a == null ? "—" : toDec(a).toFixed(2));
+const decN = (d) => (d == null ? "—" : Number(d).toFixed(2));
 const fmtTime = (iso) => new Date(iso).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+
+let seq = 0;
+const id = () => ++seq;
 
 export default function Page() {
   const [sport, setSport] = useState("nfl");
-  const [fixtures, setFixtures] = useState(null);
-  const [fxErr, setFxErr] = useState("");
   const [game, setGame] = useState(null);
-
-  useEffect(() => {
-    setFixtures(null); setFxErr(""); setGame(null);
-    fetch(`/api/fixtures?sport=${sport}`).then((r) => r.json()).then((d) => {
-      if (d.error) setFxErr(d.error); else setFixtures(d.fixtures);
-    }).catch((e) => setFxErr(String(e)));
-  }, [sport]);
-
-  return (
-    <div className="shell">
-      <header className="top">
-        <div>
-          <div className="sub">Narrative bet builder · prototype</div>
-          <h1>{game ? `${game.away} at ${game.home}` : "Pick a game"}</h1>
-        </div>
-        <nav className="tabs">
-          {SPORT_TABS.map(([k, l]) => (
-            <button key={k} className={`tab ${k === sport ? "on" : ""}`} onClick={() => setSport(k)}>{l}</button>
-          ))}
-        </nav>
-      </header>
-
-      {!game ? (
-        <div className="games">
-          {fxErr && <div className="hint">Couldn't load games: {fxErr}</div>}
-          {!fixtures && !fxErr && <div className="hint">Loading today's games…</div>}
-          {fixtures && fixtures.length === 0 && <div className="hint">Nothing on the board for the next 36 hours.</div>}
-          {fixtures?.map((f) => (
-            <button key={f.id} className={`game ${f.is_live ? "live" : ""}`} onClick={() => setGame(f)}>
-              <div className="t">{f.away} at {f.home}</div>
-              <div className="m">{f.is_live ? "Live now" : fmtTime(f.start_date)}</div>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <Builder key={game.id} sport={sport} game={game} examples={EXAMPLES[sport] || []} onBack={() => setGame(null)} />
-      )}
-    </div>
-  );
-}
-
-function Builder({ sport, game, examples, onBack }) {
-  const [turns, setTurns] = useState([]);
-  const [feed, setFeed] = useState([]);
-  const [legs, setLegs] = useState([]);
+  const [thread, setThread] = useState([]);       // messages
+  const [legs, setLegs] = useState([]);           // current slip (attached to the last card)
   const [rejected, setRejected] = useState([]);
+  const [turns, setTurns] = useState([]);
   const [pricing, setPricing] = useState(null);
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [repricing, setRepricing] = useState(false);
   const [input, setInput] = useState("");
   const end = useRef(null);
-  useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [feed, loading]);
+  const repriceSeq = useRef(0);
+
+  useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [thread, loading, legs]);
+
+  // Sport change → ask for a game, in the thread.
+  useEffect(() => {
+    setGame(null); setLegs([]); setRejected([]); setTurns([]); setPricing(null); setDirty(false);
+    const label = SPORTS.find((s) => s[0] === sport)?.[1];
+    const mid = id();
+    setThread([{ id: mid, role: "bot", kind: "games", text: `Which ${label} game are we talking about?`, fixtures: null, err: "" }]);
+    fetch(`/api/fixtures?sport=${sport}`).then((r) => r.json()).then((d) => {
+      setThread((t) => t.map((m) => (m.id === mid ? { ...m, fixtures: d.fixtures || [], err: d.error || "" } : m)));
+    }).catch((e) => setThread((t) => t.map((m) => (m.id === mid ? { ...m, fixtures: [], err: String(e) } : m))));
+  }, [sport]);
+
+  function pickGame(f) {
+    setGame(f);
+    setThread((t) => [...t,
+      { id: id(), role: "you", text: `${f.away} at ${f.home}` },
+      { id: id(), role: "bot", kind: "prompt", text: "How does it go? Tell it like you'd tell a friend. You can add rules too — \"at least 5 legs\", \"minimum 15.0\".", examples: EXAMPLES[sport] || [] },
+    ]);
+  }
 
   const lockedIds = legs.filter((l) => l.locked).map((l) => l.id);
 
-  async function run(nextTurns, locked, rej, label) {
+  async function run(nextTurns, locked, rej, rebuilt) {
     setLoading(true); setDirty(false);
+    const mid = id();
+    setThread((t) => [...t, { id: mid, role: "bot", kind: "card", pending: true }]);
     try {
       const r = await fetch("/api/build", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sport, fixture_id: game.id, turns: nextTurns, locked, rejected: rej }),
       }).then((x) => x.json());
       if (r.error) throw new Error(r.error);
-      setLegs(r.legs); setPricing(r.pricing);
-      setFeed((f) => [...f, { role: "engine", summary: r.summary, note: r.note, count: r.legs.length, label }]);
+      setLegs(r.legs.map((l) => ({ ...l, gone: false })));
+      setPricing(r.pricing);
+      setThread((t) => t.map((m) => (m.id === mid ? {
+        id: mid, role: "bot", kind: "card", pending: false, title: r.title, summary: r.summary, note: r.note,
+        constraints: r.constraints, unmet: r.unmet, rebuilt, latest: true,
+      } : { ...m, latest: false })));
     } catch (e) {
-      setFeed((f) => [...f, { role: "engine", error: String(e.message || e) }]);
+      setThread((t) => t.map((m) => (m.id === mid ? { id: mid, role: "bot", kind: "text", err: String(e.message || e) } : m)));
     } finally { setLoading(false); }
   }
 
   function send(text) {
     const t = text.trim(); if (!t || loading) return;
+    setInput("");
+    if (!game) return; // game must be picked via the cards
     const nextTurns = [...turns, t];
-    setTurns(nextTurns); setInput("");
-    setFeed((f) => [...f, { role: "user", text: t }]);
-    run(nextTurns, lockedIds, rejected);
+    setTurns(nextTurns);
+    setThread((th) => [...th, { id: id(), role: "you", text: t }]);
+    run(nextTurns, lockedIds, rejected, false);
   }
-  const repriceSeq = useRef(0);
+
   async function reprice(ids) {
-    const seq = ++repriceSeq.current;
-    setRepricing(true);
+    const s = ++repriceSeq.current;
     try {
       const r = await fetch("/api/price", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sport, fixture_id: game.id, ids }) }).then((x) => x.json());
-      if (seq === repriceSeq.current && r.pricing) setPricing(r.pricing);
-    } catch { /* keep the naive number */ } finally { if (seq === repriceSeq.current) setRepricing(false); }
+      if (s === repriceSeq.current && r.pricing) setPricing(r.pricing);
+    } catch { /* keep naive */ }
   }
-  function drop(id) {
-    const next = legs.filter((l) => l.id !== id);
-    setLegs(next); setRejected((r) => [...r, id]); setDirty(true);
-    setPricing((p) => (p ? { ...p, sgp: null, sgp_error: null } : p));
-    if (next.length >= 2) reprice(next.map((l) => l.id)); else setPricing((p) => (p ? { ...p, sgp: null } : p));
+  function drop(legId) {
+    const next = legs.map((l) => (l.id === legId ? { ...l, gone: true } : l));
+    setLegs(next); setRejected((r) => [...r, legId]); setDirty(true);
+    const live = next.filter((l) => !l.gone).map((l) => l.id);
+    if (live.length >= 2) reprice(live);
   }
-  function lock(id) { setLegs((ls) => ls.map((l) => (l.id === id ? { ...l, locked: !l.locked } : l))); }
+  function lock(legId) { setLegs((ls) => ls.map((l) => (l.id === legId ? { ...l, locked: !l.locked } : l))); }
   function rebuild() {
-    setFeed((f) => [...f, { role: "user", meta: true, text: `Rebuild — keep ${lockedIds.length}, drop ${rejected.length}.` }]);
-    run(turns, lockedIds, rejected, "rebuilt");
+    setThread((t) => [...t, { id: id(), role: "you", meta: true, text: `Rebuild — keep ${lockedIds.length}, drop ${rejected.length}` }]);
+    run(turns, lockedIds, rejected, true);
   }
 
-  const naive = legs.length ? toAm(legs.reduce((p, l) => p * toDec(l.price), 1)) : null;
-  const bookPrice = pricing?.sgp?.[Object.keys(pricing.sgp || {}).find((k) => k.toLowerCase() !== "opticodds ai")] ?? null;
-  const aiPrice = pricing?.sgp?.["OpticOdds AI"] ?? null;
-  const headline = bookPrice ?? aiPrice;
+  const live = legs.filter((l) => !l.gone);
+  const naive = live.length ? live.reduce((p, l) => p * toDec(l.price), 1) : null;
+  const sgpBook = pricing?.sgp ? Object.entries(pricing.sgp).find(([k, v]) => k.toLowerCase() !== "opticodds ai" && v != null) : null;
+  const headline = sgpBook ? toDec(sgpBook[1]) : naive;
 
   return (
-    <div className="build">
-      <section className="chat">
-        <div className="feed">
-          {feed.length === 0 && (
-            <div className="empty">
-              <p className="h">How does this one go?</p>
-              <p className="s">Tell it like you'd tell a friend. The engine turns your story into a same-game parlay you can trim and rebuild.</p>
-              {examples.map((e) => <button key={e} className="chip" onClick={() => send(e)}>"{e}"</button>)}
-              <button className="chip" onClick={onBack} style={{ color: "var(--muted)" }}>← Different game</button>
-            </div>
-          )}
-          {feed.map((m, i) => m.role === "user" ? (
-            <div key={i} className={`u ${m.meta ? "meta" : ""}`}>{m.text}</div>
-          ) : (
-            <div key={i} className="e">
-              {m.error ? <p className="err">{m.error}</p> : (<>
-                <p style={{ margin: 0 }}>{m.summary}</p>
-                <p className="m">{m.label === "rebuilt" ? "Rebuilt the slip" : "Built a slip"} with {m.count} leg{m.count === 1 ? "" : "s"}. Lock what you like, drop what you don't, then rebuild.</p>
-                {m.note && <p className="n">{m.note}</p>}
-              </>)}
-            </div>
+    <div className="app">
+      <header className="top">
+        <div className="brand"><h1>SGP Chat</h1><span className="sub">DST · narrative bet builder</span></div>
+        <nav className="sports">
+          {SPORTS.map(([k, l, ic]) => (
+            <button key={k} className={`sport ${k === sport ? "on" : ""}`} onClick={() => setSport(k)}><span className="ic">{ic}</span>{l}</button>
           ))}
-          {loading && <div className="e" style={{ color: "var(--muted)" }}>Reading the story…</div>}
-          <div ref={end} />
-        </div>
-        <div className="compose">
-          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send(input)}
-            placeholder={turns.length ? "Add to the story…" : "I think…"} disabled={loading} />
-          <button className="primary" onClick={() => send(input)} disabled={loading || !input.trim()}>Build</button>
-        </div>
-      </section>
+        </nav>
+      </header>
 
-      <aside className="slip">
-        <div className="hd">
-          <span>Your slip · {pricing?.sportsbook || "book"} lines</span>
-          {feed.length > 0 && <button onClick={onBack} style={{ color: "var(--muted)", fontSize: 12 }}>Start over</button>}
-        </div>
-        {turns.length > 0 && <p className="story">"{turns[0]}"</p>}
-        <div className="legs">
-          {loading && legs.length === 0 && [0, 1, 2, 3].map((i) => <div key={i} className="skel" />)}
-          {!loading && legs.length === 0 && <p className="hint">Legs land here once you've told the story.</p>}
-          {legs.map((leg) => (
-            <div key={leg.id} className="leg" style={{ opacity: loading ? .5 : 1 }}>
-              <div className="l">
-                <div className="row"><div className="nm">{leg.label}</div><div className="px">{fmtAm(leg.price)}</div></div>
-                <div className="why">{leg.why}</div>
-              </div>
-              <div className="acts">
-                <button className={`ico ${leg.locked ? "on" : ""}`} title={leg.locked ? "Unlock" : "Keep on rebuild"} onClick={() => lock(leg.id)}>{leg.locked ? "✓" : "○"}</button>
-                <button className="ico" title="Drop this leg" onClick={() => drop(leg.id)}>×</button>
-              </div>
+      <main className="thread">
+        {thread.map((m) => {
+          if (m.role === "you") return <div key={m.id} className={`you ${m.meta ? "meta" : ""}`}>{m.text}</div>;
+          if (m.kind === "games") return (
+            <div key={m.id} className="bot">
+              <div className="who">SGP CHAT</div>
+              <p>{m.text}</p>
+              {m.err && <p className="err">Couldn't load games: {m.err}</p>}
+              {m.fixtures == null && !m.err && <p className="dim">Loading…</p>}
+              {m.fixtures?.length === 0 && <p className="dim">Nothing on the board in the next 36 hours.</p>}
+              {m.fixtures?.length > 0 && !game && (
+                <div className="games">
+                  {m.fixtures.map((f) => (
+                    <button key={f.id} className={`game ${f.is_live ? "live" : ""}`} onClick={() => pickGame(f)}>
+                      <div className="t">{f.away} at {f.home}</div>
+                      <div className="m">{f.is_live ? "Live now" : fmtTime(f.start_date)}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          ))}
-        </div>
-        <div className="tot">
-          <div className="row">
-            <div>
-              <div className="k">{legs.length} leg{legs.length === 1 ? "" : "s"} · {repricing ? "repricing…" : headline != null ? `correlated SGP · ${bookPrice != null ? (pricing?.sportsbook || "book") : "OpticOdds AI"}` : legs.length >= 2 ? "straight multiply (no SGP price)" : "straight multiply"}</div>
-              {legs.length > 0 && headline != null && <div className="naive">Straight multiply {fmtAm(naive)}{aiPrice != null && bookPrice != null ? ` · OpticOdds AI ${fmtAm(aiPrice)}` : ""}</div>}
-              {pricing?.sgp_error && !repricing && <div className="k" style={{ color: "var(--danger)" }}>{pricing.sgp_error}</div>}
+          );
+          if (m.kind === "prompt") return (
+            <div key={m.id} className="bot">
+              <div className="who">SGP CHAT</div>
+              <p>{m.text}</p>
+              {turns.length === 0 && <div className="chips">{m.examples.map((e) => <button key={e} className="chip" onClick={() => send(e)}>{e}</button>)}</div>}
             </div>
-            <div className="big" style={{ opacity: repricing ? .5 : 1 }}>{headline != null ? fmtAm(headline) : naive != null ? fmtAm(naive) : "—"}</div>
-          </div>
-          <div className="btns">
-            <button className={`rebuild ${dirty ? "on" : ""}`} onClick={rebuild} disabled={!dirty || loading}>{dirty ? `Rebuild (${rejected.length} dropped)` : "Rebuild"}</button>
-            <button className="primary" disabled={!legs.length}>Add to betslip</button>
-          </div>
+          );
+          if (m.kind === "text") return (
+            <div key={m.id} className="bot"><div className="who">SGP CHAT</div><p className="err">{m.err}</p></div>
+          );
+          // card
+          const isLatest = m.latest && !loading;
+          return (
+            <div key={m.id} className="bot">
+              <div className="who">SGP CHAT</div>
+              {m.pending ? (
+                <>
+                  <p className="dim">Reading the story…</p>
+                  <div className="card">{[0, 1, 2, 3].map((i) => <div key={i} className="skel" />)}</div>
+                </>
+              ) : (
+                <>
+                  <p>{m.summary}</p>
+                  {m.latest ? (
+                    <div className="card">
+                      <div className="hd">
+                        <div>
+                          <div className="k">{live.length} legs · {game?.away} at {game?.home}</div>
+                          <div className="t">{m.title || "Your slip"}</div>
+                        </div>
+                        <div className="px">
+                          <div className="big">{decN(headline)}</div>
+                          <div className="k2">{sgpBook ? `SGP · ${pricing.sportsbook}` : "straight multiply"}</div>
+                        </div>
+                      </div>
+                      {legs.map((leg) => (
+                        <div key={leg.id} className={`leg ${leg.gone ? "gone" : ""}`}>
+                          <div className="l">
+                            <div className="nm">{leg.label}</div>
+                            <div className="why">{leg.why}</div>
+                          </div>
+                          <div className="px">{dec(leg.price)}</div>
+                          {!leg.gone && isLatest && (
+                            <div className="acts">
+                              <button className={`ico ${leg.locked ? "on" : ""}`} title={leg.locked ? "Unlock" : "Keep on rebuild"} onClick={() => lock(leg.id)}>{leg.locked ? "✓" : "○"}</button>
+                              <button className="ico" title="Drop this leg" onClick={() => drop(leg.id)}>×</button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      <div className="ft">
+                        <div>
+                          {game?.start_date && <span>Starts {fmtTime(game.start_date)} · {pricing?.sportsbook || "book"} lines</span>}
+                          {m.unmet?.length > 0 && <div className="warn">Couldn't fully hit your target: {m.unmet.join("; ")}</div>}
+                        </div>
+                        <div className="btns">
+                          <button className={`rebuild ${dirty ? "on" : ""}`} onClick={rebuild} disabled={!dirty || loading}>{dirty ? `Rebuild (${rejected.length} dropped)` : "Rebuild"}</button>
+                          <button className="primary" disabled={!live.length}>Add to betslip</button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="dim">Earlier slip — superseded below.</p>
+                  )}
+                  {m.note && <p className="dim">{m.note}</p>}
+                  {m.latest && !m.pending && (
+                    <p className="dim">Lock what you like, drop what you don't, then rebuild — or keep talking to change the story.</p>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+        <div ref={end} />
+      </main>
+
+      <div className="composer">
+        <div className="in">
+          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send(input)}
+            placeholder={!game ? "Pick a game above to start" : turns.length ? "Add to the story, or set a rule…" : "How does this one go?"} disabled={loading || !game} />
+          <button className="send" onClick={() => send(input)} disabled={loading || !game || !input.trim()} aria-label="Send">↑</button>
         </div>
-      </aside>
+      </div>
     </div>
   );
 }
