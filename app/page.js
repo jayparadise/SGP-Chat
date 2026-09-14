@@ -15,6 +15,8 @@ const EXAMPLES = {
 };
 
 const fmtAm = (a) => (a == null ? "—" : a > 0 ? `+${Math.round(a)}` : `${Math.round(a)}`);
+const toDec = (a) => (a > 0 ? 1 + a / 100 : 1 + 100 / -a);
+const toAm = (d) => (d >= 2 ? Math.round((d - 1) * 100) : -Math.round(100 / (d - 1)));
 const fmtTime = (iso) => new Date(iso).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
 
 export default function Page() {
@@ -71,6 +73,7 @@ function Builder({ sport, game, examples, onBack }) {
   const [pricing, setPricing] = useState(null);
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [repricing, setRepricing] = useState(false);
   const [input, setInput] = useState("");
   const end = useRef(null);
   useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [feed, loading]);
@@ -99,13 +102,28 @@ function Builder({ sport, game, examples, onBack }) {
     setFeed((f) => [...f, { role: "user", text: t }]);
     run(nextTurns, lockedIds, rejected);
   }
-  function drop(id) { setLegs((ls) => ls.filter((l) => l.id !== id)); setRejected((r) => [...r, id]); setDirty(true); setPricing(null); }
+  const repriceSeq = useRef(0);
+  async function reprice(ids) {
+    const seq = ++repriceSeq.current;
+    setRepricing(true);
+    try {
+      const r = await fetch("/api/price", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sport, fixture_id: game.id, ids }) }).then((x) => x.json());
+      if (seq === repriceSeq.current && r.pricing) setPricing(r.pricing);
+    } catch { /* keep the naive number */ } finally { if (seq === repriceSeq.current) setRepricing(false); }
+  }
+  function drop(id) {
+    const next = legs.filter((l) => l.id !== id);
+    setLegs(next); setRejected((r) => [...r, id]); setDirty(true);
+    setPricing((p) => (p ? { ...p, sgp: null, sgp_error: null } : p));
+    if (next.length >= 2) reprice(next.map((l) => l.id)); else setPricing((p) => (p ? { ...p, sgp: null } : p));
+  }
   function lock(id) { setLegs((ls) => ls.map((l) => (l.id === id ? { ...l, locked: !l.locked } : l))); }
   function rebuild() {
     setFeed((f) => [...f, { role: "user", meta: true, text: `Rebuild — keep ${lockedIds.length}, drop ${rejected.length}.` }]);
     run(turns, lockedIds, rejected, "rebuilt");
   }
 
+  const naive = legs.length ? toAm(legs.reduce((p, l) => p * toDec(l.price), 1)) : null;
   const bookPrice = pricing?.sgp?.[Object.keys(pricing.sgp || {}).find((k) => k.toLowerCase() !== "opticodds ai")] ?? null;
   const aiPrice = pricing?.sgp?.["OpticOdds AI"] ?? null;
   const headline = bookPrice ?? aiPrice;
@@ -168,11 +186,11 @@ function Builder({ sport, game, examples, onBack }) {
         <div className="tot">
           <div className="row">
             <div>
-              <div className="k">{legs.length} leg{legs.length === 1 ? "" : "s"} · {headline != null ? "correlated SGP price" : dirty ? "reprice on rebuild" : "no SGP price"}</div>
-              {pricing && <div className="naive">Straight multiply {fmtAm(pricing.naive)}{aiPrice != null && bookPrice != null ? ` · OpticOdds AI ${fmtAm(aiPrice)}` : ""}</div>}
-              {pricing?.sgp_error && <div className="k" style={{ color: "var(--danger)" }}>{pricing.sgp_error}</div>}
+              <div className="k">{legs.length} leg{legs.length === 1 ? "" : "s"} · {repricing ? "repricing…" : headline != null ? `correlated SGP · ${bookPrice != null ? (pricing?.sportsbook || "book") : "OpticOdds AI"}` : legs.length >= 2 ? "straight multiply (no SGP price)" : "straight multiply"}</div>
+              {legs.length > 0 && headline != null && <div className="naive">Straight multiply {fmtAm(naive)}{aiPrice != null && bookPrice != null ? ` · OpticOdds AI ${fmtAm(aiPrice)}` : ""}</div>}
+              {pricing?.sgp_error && !repricing && <div className="k" style={{ color: "var(--danger)" }}>{pricing.sgp_error}</div>}
             </div>
-            <div className="big">{headline != null ? fmtAm(headline) : pricing ? fmtAm(pricing.naive) : "—"}</div>
+            <div className="big" style={{ opacity: repricing ? .5 : 1 }}>{headline != null ? fmtAm(headline) : naive != null ? fmtAm(naive) : "—"}</div>
           </div>
           <div className="btns">
             <button className={`rebuild ${dirty ? "on" : ""}`} onClick={rebuild} disabled={!dirty || loading}>{dirty ? `Rebuild (${rejected.length} dropped)` : "Rebuild"}</button>
